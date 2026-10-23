@@ -39,8 +39,9 @@
   list-style-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M10 3 5 8l5 5' fill='none' stroke='%23ececf2' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
 }
 
+/* Only show the back chevron when there's somewhere to go back to. */
 :root[zen-little-window="true"]:not([little-arc-look="off"]) #back-button[disabled] {
-  opacity: 0.4 !important;
+  display: none !important;
 }
 
 /* Traffic lights at the start of the toolbar (moved there by littleArcLook.uc.js) */
@@ -152,4 +153,14 @@
 
 :root[zen-little-window="true"]:not([little-arc-look="off"]) #zen-tabbox-wrapper::after {
   box-shadow: none !important;
+}
+
+/* Container badge as Arc's profile chip */
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #zen-little-window-container-badge {
+  background: rgb(44, 44, 60) !important;
+  color: var(--little-arc-text) !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #zen-little-window-container-badge:hover {
+  background: rgb(54, 54, 72) !important;
 }

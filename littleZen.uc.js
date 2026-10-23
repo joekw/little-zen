@@ -13,9 +13,15 @@
   const URLBAR_WIDTH = 640;
   const NORMAL_WINDOW_WIDTH = 1000;
   const NORMAL_WINDOW_HEIGHT = 600;
+  // The last size the user resized a Little Zen window to.
+  const WINDOW_WIDTH_PREF = "extensions.littleZen.windowWidth";
+  const WINDOW_HEIGHT_PREF = "extensions.littleZen.windowHeight";
+  const MIN_REMEMBERED_WIDTH = 400;
+  const MIN_REMEMBERED_HEIGHT = 300;
+  const REMEMBER_SIZE_DELAY_MS = 500;
   const OPEN_FEATURES =
     "titlebar,close,toolbar,location,personalbar=no,status,menubar=no," +
-    `resizable,minimizable,scrollbars,width=${URLBAR_WIDTH},height=${URLBAR_HEIGHT},centerscreen`;
+    `resizable,minimizable,scrollbars,width=${URLBAR_WIDTH},height=${URLBAR_HEIGHT},centerscreen,alwaysontop,mediapip`;
   const LITTLE_ZEN_THEME_CACHE_LIMIT = 200;
   const LITTLE_ZEN_THEME_MESSAGE_NAME = "little-zen:theme-response";
   const LITTLE_ZEN_THEME_BRIDGE_TIMEOUT_MS = 250;
@@ -226,56 +232,71 @@
     });
   }
 
-  // Asks macOS where the mouse is, in Gecko's top-left screen coordinates
-  // (Firefox has no API for the global cursor position). Resolves to null
-  // elsewhere or on failure.
-  async function queryCursorPoint() {
+  // Where the mouse is, in Gecko's top-left screen coordinates (Firefox has no
+  // API for the global cursor position), read synchronously from CoreGraphics
+  // so a new window can open there. Null elsewhere or on failure.
+  function getCursorPoint() {
     if (AppConstants.platform !== "macosx") {
       return null;
     }
+    let coreGraphics;
     try {
-      const { Subprocess } = ChromeUtils.importESModule(
-        "resource://gre/modules/Subprocess.sys.mjs"
+      const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+      coreGraphics = ctypes.open(
+        "/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics"
       );
-      const proc = await Subprocess.call({
-        command: "/usr/bin/osascript",
-        arguments: [
-          "-l",
-          "JavaScript",
-          "-e",
-          'ObjC.import("AppKit"); const p = $.NSEvent.mouseLocation; ' +
-            "const h = $.NSScreen.screens.objectAtIndex(0).frame.size.height; " +
-            'Math.round(p.x) + "," + Math.round(h - p.y)',
-        ],
-      });
-      const output = await proc.stdout.readString();
-      await proc.wait();
-      const [x, y] = output.trim().split(",").map(Number);
-      return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+      const CGPoint = new ctypes.StructType("CGPoint", [
+        { x: ctypes.double },
+        { y: ctypes.double },
+      ]);
+      const createEvent = coreGraphics.declare(
+        "CGEventCreate", ctypes.default_abi, ctypes.voidptr_t, ctypes.voidptr_t
+      );
+      const getLocation = coreGraphics.declare(
+        "CGEventGetLocation", ctypes.default_abi, CGPoint, ctypes.voidptr_t
+      );
+      const release = coreGraphics.declare(
+        "CFRelease", ctypes.default_abi, ctypes.void_t, ctypes.voidptr_t
+      );
+      const event = createEvent(null);
+      if (event.isNull()) {
+        return null;
+      }
+      const { x, y } = getLocation(event);
+      release(event);
+      return { x: Math.round(x), y: Math.round(y) };
     } catch (error) {
       log("Could not read the cursor position", error);
       return null;
+    } finally {
+      coreGraphics?.close();
     }
   }
 
-  // Centres the window on the point (normally where the link was clicked),
-  // kept inside the available area of the display containing that point.
+  // Top-left position that centres a width×height window on the point
+  // (normally where the link was clicked), kept inside the available area of
+  // the display containing it.
+  function getWindowPositionAtPoint(point, width, height) {
+    const screen = Cc["@mozilla.org/gfx/screenmanager;1"]
+      .getService(Ci.nsIScreenManager)
+      .screenForRect(point.x, point.y, 1, 1);
+    const availLeft = {}, availTop = {}, availWidth = {}, availHeight = {};
+    screen.GetAvailRectDisplayPix(availLeft, availTop, availWidth, availHeight);
+    const clamp = (value, min, size) =>
+      Math.round(Math.min(Math.max(value, min), min + Math.max(0, size)));
+    return {
+      left: clamp(point.x - width / 2, availLeft.value, availWidth.value - width),
+      top: clamp(point.y - height / 2, availTop.value, availHeight.value - height),
+    };
+  }
+
   function placeWindowAtPoint(win, point) {
     if (!point || win.closed) {
       return false;
     }
     try {
-      const screen = Cc["@mozilla.org/gfx/screenmanager;1"]
-        .getService(Ci.nsIScreenManager)
-        .screenForRect(point.x, point.y, 1, 1);
-      const left = {}, top = {}, width = {}, height = {};
-      screen.GetAvailRectDisplayPix(left, top, width, height);
-      const clamp = (value, min, size) =>
-        Math.round(Math.min(Math.max(value, min), min + Math.max(0, size)));
-      win.moveTo(
-        clamp(point.x - win.outerWidth / 2, left.value, width.value - win.outerWidth),
-        clamp(point.y - win.outerHeight / 2, top.value, height.value - win.outerHeight)
-      );
+      const { left, top } = getWindowPositionAtPoint(point, win.outerWidth, win.outerHeight);
+      win.moveTo(left, top);
       return true;
     } catch (error) {
       log("Could not place the Little Zen window at the cursor", error);
@@ -346,12 +367,67 @@
 
     setWindowResizable(win, true);
     try {
-      win.resizeTo(NORMAL_WINDOW_WIDTH, NORMAL_WINDOW_HEIGHT);
+      const { width, height } = getExpandedWindowSize(win);
+      win.__littleZenAppliedSize = { width, height };
+      win.resizeTo(width, height);
       centerWindow(win);
-      logLittleWindowState(win, "Expanded Little Zen window", { reason });
+      rememberExpandedWindowSize(win);
+      logLittleWindowState(win, "Expanded Little Zen window", { reason, width, height });
     } catch (error) {
       log("Could not expand the Little Zen window.", error);
     }
+  }
+
+  // The size of the last Little Zen window the user resized (or the default),
+  // shrunk to fit the display it's opening on.
+  function getExpandedWindowSize(win) {
+    let width = Services.prefs.getIntPref(WINDOW_WIDTH_PREF, NORMAL_WINDOW_WIDTH);
+    let height = Services.prefs.getIntPref(WINDOW_HEIGHT_PREF, NORMAL_WINDOW_HEIGHT);
+    try {
+      const point = win.__littleZenCursorPoint ?? {
+        x: win.screenX + win.outerWidth / 2,
+        y: win.screenY + win.outerHeight / 2,
+      };
+      const screen = Cc["@mozilla.org/gfx/screenmanager;1"]
+        .getService(Ci.nsIScreenManager)
+        .screenForRect(point.x, point.y, 1, 1);
+      const left = {}, top = {}, availWidth = {}, availHeight = {};
+      screen.GetAvailRectDisplayPix(left, top, availWidth, availHeight);
+      width = Math.min(width, availWidth.value);
+      height = Math.min(height, availHeight.value);
+    } catch (error) {
+      log("Could not fit the Little Zen window to its display", error);
+    }
+    return { width, height };
+  }
+
+  // Saves the window's size whenever the user resizes it, for the next one.
+  function rememberExpandedWindowSize(win) {
+    if (win.__littleZenRemembersSize) {
+      return;
+    }
+    win.__littleZenRemembersSize = true;
+    let timer = null;
+    win.addEventListener("resize", () => {
+      win.clearTimeout(timer);
+      timer = win.setTimeout(() => {
+        const { outerWidth: width, outerHeight: height } = win;
+        const applied = win.__littleZenAppliedSize;
+        // Ignore the size we set ourselves (possibly shrunk to fit a smaller
+        // display) and anything implausibly small.
+        if (
+          win.closed ||
+          (applied?.width === width && applied?.height === height) ||
+          width < MIN_REMEMBERED_WIDTH ||
+          height < MIN_REMEMBERED_HEIGHT
+        ) {
+          return;
+        }
+        Services.prefs.setIntPref(WINDOW_WIDTH_PREF, width);
+        Services.prefs.setIntPref(WINDOW_HEIGHT_PREF, height);
+        log("Remembered Little Zen window size", { width, height });
+      }, REMEMBER_SIZE_DELAY_MS);
+    });
   }
 
   function* browserWindows() {
@@ -462,6 +538,267 @@
     log("Patched browserDOMWindow for external-link interception");
   }
 
+  // Little Zen windows share browser.xhtml with main windows, so by default
+  // their size and position become the remembered geometry that the next main
+  // window opens with. Stop them saving it.
+  function stopPersistingWindowGeometry(win) {
+    try {
+      win.document?.documentElement?.removeAttribute("persist");
+    } catch (error) {
+      log("Could not stop the Little Zen window persisting its geometry", error);
+    }
+  }
+
+  // macOS: let the window into other apps' full-screen Spaces and move it to
+  // whichever Space is active when it's shown, like Little Arc, instead of
+  // macOS putting it on the desktop Space. Gecko doesn't expose
+  // NSWindow.collectionBehavior, so set it through the Objective-C runtime.
+  const NS_COLLECTION_CAN_JOIN_ALL_SPACES = 1 << 0;
+  const NS_COLLECTION_MOVE_TO_ACTIVE_SPACE = 1 << 1;
+  const NS_COLLECTION_FULL_SCREEN_PRIMARY = 1 << 7;
+  const NS_COLLECTION_FULL_SCREEN_AUXILIARY = 1 << 8;
+  const NS_COLLECTION_FULL_SCREEN_NONE = 1 << 9;
+
+  // collectionBehavior that puts a window on every Space, including other
+  // apps' full-screen ones. AppKit aborts the app on contradictory flags, so
+  // first clear the ones these exclude.
+  function onAllSpacesBehavior(current) {
+    return (
+      (current &
+        ~(NS_COLLECTION_MOVE_TO_ACTIVE_SPACE |
+          NS_COLLECTION_FULL_SCREEN_PRIMARY |
+          NS_COLLECTION_FULL_SCREEN_NONE)) |
+      NS_COLLECTION_CAN_JOIN_ALL_SPACES |
+      NS_COLLECTION_FULL_SCREEN_AUXILIARY
+    );
+  }
+
+  const NS_WINDOW_STYLE_NONACTIVATING_PANEL = 1 << 7;
+  // How long the window stays a non-activating panel after it's shown.
+  const NONACTIVATING_PANEL_MS = 500;
+
+  // Calls callback({ ctypes, send, getClass, className }) with access to the
+  // Objective-C runtime, where send(target, returnType, selectorName,
+  // ...[argType, value]) messages an object. Returns the callback's result,
+  // or null on failure.
+  function withObjC(callback) {
+    let objc;
+    try {
+      const { ctypes } = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
+      objc = ctypes.open("/usr/lib/libobjc.A.dylib");
+      const selector = objc.declare(
+        "sel_registerName", ctypes.default_abi, ctypes.voidptr_t, ctypes.char.ptr
+      );
+      const getClass = objc.declare(
+        "objc_getClass", ctypes.default_abi, ctypes.voidptr_t, ctypes.char.ptr
+      );
+      const getClassName = objc.declare(
+        "object_getClassName", ctypes.default_abi, ctypes.char.ptr, ctypes.voidptr_t
+      );
+      const send = (target, returnType, name, ...args) => {
+        const msgSend = objc.declare(
+          "objc_msgSend", ctypes.default_abi, returnType,
+          ctypes.voidptr_t, ctypes.voidptr_t, ...args.map(([type]) => type)
+        );
+        return msgSend(target, selector(name), ...args.map(([, value]) => value));
+      };
+      return callback({
+        ctypes,
+        send,
+        getClass,
+        className: object => getClassName(object).readString(),
+      });
+    } catch (error) {
+      log("Could not use the Objective-C runtime", error);
+      return null;
+    } finally {
+      objc?.close();
+    }
+  }
+
+  // Like withObjC, but send(returnType, selectorName, ...args) messages the
+  // window's NSWindow.
+  function withNSWindow(win, callback) {
+    let handle;
+    try {
+      handle = win.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle;
+    } catch (error) {
+      log("Could not get the Little Zen native window", error);
+      return null;
+    }
+    if (!handle || /^0x0*$/.test(handle)) {
+      return null;
+    }
+    return withObjC(({ ctypes, send }) => {
+      const nsWindow = ctypes.voidptr_t(ctypes.UInt64(handle));
+      return callback({
+        ctypes,
+        send: (returnType, name, ...args) => send(nsWindow, returnType, name, ...args),
+      });
+    });
+  }
+
+  // Menus are separate native windows without the Little Zen window's Space
+  // behaviour, so over a full-screen app they'd open on the hidden desktop
+  // instead. Give the visible ones the same behaviour and re-show them.
+  function bringPopupsToCurrentSpace() {
+    withObjC(({ ctypes, send, getClass, className }) => {
+      const app = send(getClass("NSApplication"), ctypes.voidptr_t, "sharedApplication");
+      const windows = send(app, ctypes.voidptr_t, "windows");
+      const count = toFlags(ctypes, send(windows, ctypes.unsigned_long, "count"));
+      for (let i = 0; i < count; i++) {
+        const window = send(
+          windows, ctypes.voidptr_t, "objectAtIndex:", [ctypes.unsigned_long, i]
+        );
+        // Gecko's own popups are PopupWindow; native menus are NSPopupMenuWindow.
+        if (!/Popup(Menu)?Window$/.test(className(window)) || !send(window, ctypes.bool, "isVisible")) {
+          continue;
+        }
+        const behavior = toFlags(ctypes, send(window, ctypes.unsigned_long, "collectionBehavior"));
+        send(
+          window,
+          ctypes.void_t,
+          "setCollectionBehavior:",
+          [ctypes.unsigned_long, onAllSpacesBehavior(behavior)]
+        );
+        // As with the Little Zen window itself, being a non-activating panel
+        // when shown is what lets it into another app's full-screen Space.
+        // Re-showing it makes macOS move it, so put it back where Gecko placed it.
+        const NSRect = new ctypes.StructType("NSRect", [
+          { x: ctypes.double },
+          { y: ctypes.double },
+          { width: ctypes.double },
+          { height: ctypes.double },
+        ]);
+        const frame = send(window, NSRect, "frame");
+        const styleMask = toFlags(ctypes, send(window, ctypes.unsigned_long, "styleMask"));
+        send(
+          window,
+          ctypes.void_t,
+          "setStyleMask:",
+          [ctypes.unsigned_long, styleMask | NS_WINDOW_STYLE_NONACTIVATING_PANEL]
+        );
+        send(window, ctypes.void_t, "orderFrontRegardless");
+        send(window, ctypes.void_t, "setFrame:display:", [NSRect, frame], [ctypes.bool, true]);
+      }
+    });
+  }
+
+  function attachPopupSpaceFix(win) {
+    if (AppConstants.platform !== "macosx" || win.__littleZenPopupSpaceFix) {
+      return;
+    }
+    win.__littleZenPopupSpaceFix = true;
+    win.document.addEventListener(
+      "popupshown",
+      () => {
+        keepOnAllSpaces(win);
+        bringPopupsToCurrentSpace();
+      },
+      true
+    );
+  }
+
+  // Re-applies the all-Spaces behaviour if something (e.g. a style change)
+  // reset it. Returns [old, new] behaviour.
+  function keepOnAllSpaces(win) {
+    return withNSWindow(win, ({ ctypes, send }) => {
+      const current = toFlags(ctypes, send(ctypes.unsigned_long, "collectionBehavior"));
+      const behavior = onAllSpacesBehavior(current);
+      if (behavior !== current) {
+        send(ctypes.void_t, "setCollectionBehavior:", [ctypes.unsigned_long, behavior]);
+      }
+      return [current, behavior];
+    });
+  }
+
+  // NSUInteger results come back as ctypes.UInt64; these flags fit in 32 bits.
+  function toFlags(ctypes, value) {
+    return ctypes.UInt64.lo(ctypes.UInt64(value.toString()));
+  }
+
+  // mediapip makes the window a non-activating panel, which is what lets it
+  // open over another app's full-screen Space. But clicks then don't activate
+  // it, and Gecko won't open menus in a window that isn't active. Once it's on
+  // screen, make it a normal window again.
+  function makeWindowActivating(win) {
+    if (win.closed) {
+      return;
+    }
+    const styleMask = withNSWindow(win, ({ ctypes, send }) => {
+      const current = toFlags(ctypes, send(ctypes.unsigned_long, "styleMask"));
+      send(
+        ctypes.void_t,
+        "setStyleMask:",
+        [ctypes.unsigned_long, current & ~NS_WINDOW_STYLE_NONACTIVATING_PANEL]
+      );
+      return current;
+    });
+    // Changing the style resets the Space behaviour; restore it.
+    keepOnAllSpaces(win);
+    log("Little Zen window made activating", { styleMask });
+    activateLittleWindow(win);
+  }
+
+  // Make Zen the active app and this its focused window, as Picture-in-Picture
+  // does. The window is already on the current Space, so macOS won't switch.
+  function activateLittleWindow(win) {
+    if (win.closed) {
+      return;
+    }
+    try {
+      if (AppConstants.platform === "macosx") {
+        Cc["@mozilla.org/widget/macdocksupport;1"]
+          .getService(Ci.nsIMacDockSupport)
+          .activateApplication(true);
+      }
+      win.focus();
+    } catch (error) {
+      log("Could not activate the Little Zen window", error);
+    }
+  }
+
+  function attachActivateOnClick(win) {
+    if (win.__littleZenActivateOnClick) {
+      return;
+    }
+    win.__littleZenActivateOnClick = true;
+    win.addEventListener(
+      "mousedown",
+      () => {
+        if (Services.focus.activeWindow !== win) {
+          activateLittleWindow(win);
+        }
+      },
+      true
+    );
+  }
+
+  function joinActiveSpace(win) {
+    if (AppConstants.platform !== "macosx" || win.__littleZenJoinedActiveSpace) {
+      return;
+    }
+    // Appear on every Space, including another app's full-screen one, so the
+    // window shows up wherever the user is.
+    const joined = withNSWindow(win, ({ ctypes, send }) => {
+      const current = toFlags(ctypes, send(ctypes.unsigned_long, "collectionBehavior"));
+      const behavior = onAllSpacesBehavior(current);
+      send(ctypes.void_t, "setCollectionBehavior:", [ctypes.unsigned_long, behavior]);
+      // macOS picks a window's Space when it's ordered in; re-order it so the
+      // new behaviour takes effect.
+      send(ctypes.void_t, "orderFrontRegardless");
+      return [current, behavior];
+    });
+    if (!joined) {
+      return;
+    }
+    win.__littleZenJoinedActiveSpace = true;
+    // It stays on all Spaces while open: dropping the flag later makes macOS
+    // move it off a full-screen Space onto another display's desktop.
+    log("Little Zen window shown on all Spaces", { behavior: joined });
+    win.setTimeout(() => makeWindowActivating(win), NONACTIVATING_PANEL_MS);
+  }
+
   function patchOpenBrowserWindow(win) {
     if (win[PATCH_FLAGS.openBrowserWindow] || typeof win.OpenBrowserWindow !== "function") {
       return;
@@ -497,6 +834,8 @@
             LITTLE_WINDOW_ATTR,
             "true"
           );
+          stopPersistingWindowGeometry(littleWindow);
+          joinActiveSpace(littleWindow);
           if (littleWindow.__littleZenStartLoadingVeil) {
             littleWindow.document?.documentElement?.setAttribute(
               "zen-little-window-loading",
@@ -2831,6 +3170,9 @@
     const popup = doc.createXULElement("menupopup");
     popup.id = PICKER_MENU_ID;
     popup.setAttribute("ignorekeys", "true");
+    // Native macOS menus can't open over another app's full-screen Space,
+    // where the Little Zen window can be.
+    popup.setAttribute("nonnative", "");
 
     picker.appendChild(openButton);
     picker.appendChild(arrow);
@@ -3126,6 +3468,158 @@
 
   // ── End Workspace Picker ─────────────────────────────────────────────────────
 
+  // ── Container Badge ──────────────────────────────────────────────────────────
+  // An Arc-style profile chip at the start of the URL bar showing the page's
+  // container. Picking another container reopens the page in it.
+
+  const CONTAINER_BADGE_ID = "zen-little-window-container-badge";
+
+  function getContextualIdentityService() {
+    // Browser windows already load it; the module path moved to moz-src:///
+    // in newer Firefox versions.
+    return (
+      window.ContextualIdentityService ??
+      ChromeUtils.importESModule(
+        "moz-src:///toolkit/components/contextualidentity/ContextualIdentityService.sys.mjs"
+      ).ContextualIdentityService
+    );
+  }
+
+  // [{ id, label, color, icon }], starting with the default (no) container.
+  function getContainerChoices() {
+    const choices = [{ id: 0, label: "Default", color: null, icon: null }];
+    try {
+      const service = getContextualIdentityService();
+      for (const identity of service.getPublicIdentities()) {
+        choices.push({
+          id: identity.userContextId,
+          label: service.getUserContextLabel(identity.userContextId),
+          color: identity.color,
+          icon: identity.icon,
+        });
+      }
+    } catch (error) {
+      log("Could not list containers", error);
+    }
+    return choices;
+  }
+
+  // The link as it was before any redirects: the link that opened the window
+  // while the tab is still on its first page, otherwise the current history
+  // entry's pre-redirect URL.
+  function getLittleWindowOriginalUrl(win) {
+    const browser = win.gBrowser?.selectedBrowser;
+    try {
+      const history = browser?.browsingContext?.sessionHistory;
+      if (win.__littleZenRoutedURL && (!history || history.index <= 0)) {
+        return win.__littleZenRoutedURL;
+      }
+      const entry = history?.getEntryAtIndex(history.index);
+      const spec = entry?.originalURI?.spec || entry?.URI?.spec;
+      if (spec && !spec.startsWith("about:")) {
+        return spec;
+      }
+    } catch (error) {
+      log("Could not read the pre-redirect URL", error);
+    }
+    return win.__littleZenRoutedURL || browser?.currentURI?.spec || null;
+  }
+
+  function switchLittleWindowContainer(win, containerId) {
+    const oldTab = win.gBrowser?.selectedTab;
+    const url = getLittleWindowOriginalUrl(win);
+    if (!oldTab || !url || getTabContainerId(oldTab) === containerId) {
+      return;
+    }
+    routeLog("Reopening Little Zen page in another container", { url, containerId });
+    win.__littleZenRoutedURL = url;
+    const tab = win.gBrowser.addTab(url, {
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      skipAnimation: true,
+      skipRoute: true,
+      inBackground: false,
+      userContextId: containerId,
+    });
+    if (!tab?.linkedBrowser) {
+      log("Could not open the page in the chosen container");
+      return;
+    }
+    syncLittleWindowTransparentBrowsers(win);
+    win.gBrowser.selectedTab = tab;
+    if (win.gBrowser.tabs.length > 1) {
+      win.gBrowser.removeTab(oldTab, { animate: false });
+    }
+  }
+
+  function ensureContainerBadge(win) {
+    const doc = win.document;
+    if (!isLittleWindow(win) || doc.getElementById(CONTAINER_BADGE_ID)) {
+      return;
+    }
+    const identityBox = doc.getElementById("identity-box");
+    if (!identityBox) {
+      return;
+    }
+
+    const badge = doc.createXULElement("toolbarbutton");
+    badge.id = CONTAINER_BADGE_ID;
+    badge.setAttribute("type", "menu");
+    badge.setAttribute("tooltiptext", "Switch container");
+    const popup = doc.createXULElement("menupopup");
+    // Native macOS menus can't open over another app's full-screen Space.
+    popup.setAttribute("nonnative", "");
+    badge.appendChild(popup);
+
+    const update = () => {
+      const containerId = getTabContainerId(win.gBrowser?.selectedTab);
+      const choice =
+        getContainerChoices().find(c => c.id === containerId) ??
+        { id: containerId, label: "Container", color: null, icon: null };
+      badge.setAttribute("label", choice.label);
+      badge.className = "";
+      badge.classList.add("zen-little-window-container-badge");
+      if (choice.color) {
+        badge.classList.add(`identity-color-${choice.color}`, `identity-icon-${choice.icon}`);
+      }
+    };
+
+    popup.addEventListener("popupshowing", () => {
+      popup.replaceChildren();
+      const current = getTabContainerId(win.gBrowser?.selectedTab);
+      for (const choice of getContainerChoices()) {
+        const item = doc.createXULElement("menuitem");
+        item.setAttribute("label", choice.label);
+        // Only the current container gets a checkmark: XUL treats any
+        // "checked" attribute as checked, and non-native menus draw an empty
+        // box for unchecked checkbox items.
+        if (choice.id === current) {
+          item.setAttribute("type", "checkbox");
+          item.setAttribute("checked", "true");
+        }
+        if (choice.color) {
+          item.classList.add(
+            "menuitem-iconic",
+            `identity-color-${choice.color}`,
+            `identity-icon-${choice.icon}`
+          );
+        }
+        item.addEventListener("command", () => switchLittleWindowContainer(win, choice.id));
+        popup.appendChild(item);
+      }
+    });
+
+    // Keep clicks on the badge from focusing the URL bar for editing.
+    badge.addEventListener("mousedown", event => event.stopPropagation());
+
+    // First thing in the address pill, like Arc's profile chip.
+    identityBox.parentElement.prepend(badge);
+    win.gBrowser.tabContainer.addEventListener("TabSelect", update);
+    win.gBrowser.tabContainer.addEventListener("TabAttrModified", update);
+    update();
+  }
+
+  // ── End Container Badge ──────────────────────────────────────────────────────
+
   function attachDoubleEscapeClose(win) {
     if (win[PATCH_FLAGS.doubleEscapeClose]) {
       return;
@@ -3305,6 +3799,10 @@
     }
 
     win.document.documentElement.setAttribute(LITTLE_WINDOW_ATTR, "true");
+    stopPersistingWindowGeometry(win);
+    joinActiveSpace(win);
+    attachActivateOnClick(win);
+    attachPopupSpaceFix(win);
     patchCompactModeManager(win);
     patchVerticalTabsManager(win);
     patchZenUIManager(win);
@@ -3329,6 +3827,7 @@
       closeLittleWindowUrlbar(win, "apply-mode-urlbar-disabled");
     }
     ensureSpacePicker(win);
+    ensureContainerBadge(win);
     logLittleWindowState(win, "Applied Little Zen mode");
   }
 
@@ -3613,28 +4112,33 @@
         return null;
       }
 
-      // Look up the cursor now, while it's still where the link was clicked.
-      const cursorPoint = queryCursorPoint();
+      // Open centred on the cursor (where the link was clicked) rather than
+      // centred on the screen, so the window doesn't visibly jump there.
+      const cursorPoint = getCursorPoint();
+      let features = OPEN_FEATURES;
+      if (cursorPoint) {
+        try {
+          const { left, top } = getWindowPositionAtPoint(
+            cursorPoint, URLBAR_WIDTH, URLBAR_HEIGHT
+          );
+          features = OPEN_FEATURES.replace(",centerscreen", "") + `,left=${left},top=${top}`;
+        } catch (error) {
+          log("Could not position the Little Zen window at the cursor", error);
+        }
+      }
 
       const littleWindow = opener.OpenBrowserWindow({
         zenLittleWindow: true,
         all: false,
-        features: OPEN_FEATURES,
+        features,
         url,
         expanded,
       });
 
       if (littleWindow) {
-        cursorPoint.then(point => {
-          littleWindow.__littleZenCursorPoint = point;
-          const placed = placeWindowAtPoint(littleWindow, point);
-          log("Little Zen cursor placement", {
-            point,
-            placed,
-            screenX: littleWindow.screenX,
-            screenY: littleWindow.screenY,
-          });
-        });
+        // Later resizes (e.g. expanding to the page size) re-centre on it.
+        littleWindow.__littleZenCursorPoint = cursorPoint;
+        log("Little Zen cursor placement", { cursorPoint, features });
         this.queueNavigation(littleWindow, url, { source, triggeringPrincipal });
         if (expanded) {
           whenStartupReady(littleWindow, () => {

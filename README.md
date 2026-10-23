@@ -12,7 +12,12 @@ This fork's `little-arc` branch makes Little Zen behave and look more like Arc's
 
 - **Little Arc look** (`little-arc-look.css`, `littleArcLook.uc.js`): a dark toolbar with the macOS traffic lights at the left, a single back chevron, a rounded address pill, a dark **Open in Space ⌘O** button, and the page filling the window under the toolbar. Remove the `@import url("CSS/little-arc-look.css");` line from `userChrome.css` to go back to the original look.
 - **Main window's container:** pages open in the container of the space that's active in the most recently used main window, instead of always the default container. A link clicked while you're in a space tied to a Work container opens with your Work cookies and logins.
-- **Opens at the cursor (macOS):** the window is centred on the mouse pointer, on whichever display it's on.
+- **Container chip:** an Arc-style chip at the start of the address pill shows the page's container. Pick another container from it to reopen the page there, using the link as it was before any redirects.
+- **Opens at the cursor (macOS):** the window opens centred on the mouse pointer, on whichever display it's on.
+- **Opens over full-screen apps (macOS):** a link clicked in a full-screen app opens over that app instead of on another Space. The window opens with Firefox's Picture-in-Picture window type, then becomes a normal window, and it and its menus are kept on all Spaces through the Objective-C runtime (js-ctypes). It stays on all Spaces while it's open.
+- **Remembers its size:** a new window opens at the size you last resized a Little Zen window to (`extensions.littleZen.windowWidth` and `windowHeight`), shrunk to fit its display.
+- **Back chevron only when there's history.**
+- **Doesn't resize the main window:** Little Zen windows no longer overwrite the window size Firefox remembers, which made the next main window open at Little Zen's size.
 - **Not restored as regular windows:** the installer sets `zen.session-store.restore-unsynced-windows` to `false`, so Little Zen windows open at quit don't come back as regular windows. Other unsynced windows (for example ones from **Open Link in New Window**) aren't restored either.
 - **Private debug log:** `little-zen-debug.log` in the profile, which records visited URLs, is only written when `extensions.littleZen.debugRouting` is `true`.
 
