@@ -1,0 +1,155 @@
+/* Little Arc look for Little Zen windows. Loaded after little-zen.css; the
+   extra :not() in each selector outranks Little Zen's own !important rules. */
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) {
+  --little-arc-bar: rgb(36, 33, 52);
+  --little-arc-pill: rgb(58, 56, 74);
+  --little-arc-pill-hover: rgb(68, 66, 86);
+  --little-arc-text: rgb(236, 236, 242);
+  --little-arc-muted: rgba(236, 236, 242, 0.55);
+  --little-arc-button: rgb(14, 14, 38);
+  --little-arc-keycap: rgb(36, 36, 64);
+  --little-arc-radius: 8px;
+  --little-arc-window-radius: 10px;
+
+  /* Ignore the page-derived colours Little Zen applies to the frame. */
+  --zen-tab-header-background: var(--little-arc-bar) !important;
+  --zen-tab-header-foreground: var(--little-arc-text) !important;
+  --little-zen-window-theme-background: var(--little-arc-bar) !important;
+  --blended-addressbar-frame-background: var(--little-arc-bar) !important;
+  --little-zen-theme-outline: transparent !important;
+  --little-zen-control-border-shadow: none !important;
+}
+
+/* Toolbar */
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #nav-bar {
+  background-color: var(--little-arc-bar) !important;
+  color: var(--little-arc-text) !important;
+  padding-inline: 0 8px !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #forward-button,
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #stop-reload-button {
+  display: none !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #back-button {
+  margin-inline: 2px 4px !important;
+  /* Arc uses a chevron rather than an arrow. */
+  list-style-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M10 3 5 8l5 5' fill='none' stroke='%23ececf2' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #back-button[disabled] {
+  opacity: 0.4 !important;
+}
+
+/* Traffic lights at the start of the toolbar (moved there by littleArcLook.uc.js) */
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #nav-bar > .titlebar-buttonbox-container {
+  position: static !important;
+  width: auto !important;
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+  align-self: center !important;
+  margin-inline: 4px 6px !important;
+}
+
+/* Address pill */
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #urlbar:not([zen-floating-urlbar="true"]) {
+  --urlbar-container-height: 30px !important;
+  --urlbar-height: 30px !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #urlbar:not([zen-floating-urlbar="true"]):not([focused]):not([open]):not([breakout-extend="true"]) > .urlbar-background {
+  background: var(--little-arc-pill) !important;
+  border-radius: var(--little-arc-radius) !important;
+  box-shadow: none !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #urlbar:not([zen-floating-urlbar="true"]):not([focused]):not([open]):not([breakout-extend="true"]):hover > .urlbar-background {
+  background: var(--little-arc-pill-hover) !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #urlbar:not([zen-floating-urlbar="true"]):not([focused]):not([open]):not([breakout-extend="true"]) :is(.urlbar-input-box, #urlbar-input) {
+  color: var(--little-arc-text) !important;
+  font-weight: 500 !important;
+}
+
+/* Page-action and extension icons stay light on the dark bar. */
+:root[zen-little-window="true"][zen-little-header-text]:not([little-arc-look="off"]) #urlbar .urlbar-addon-page-action > .urlbar-icon {
+  filter: brightness(0) invert(1) !important;
+}
+
+:root[zen-little-window="true"][zen-little-header-text]:not([little-arc-look="off"]) #nav-bar .unified-extensions-item-action-button {
+  list-style-image: var(--webextension-toolbar-image-dark, var(--webextension-toolbar-image, inherit)) !important;
+}
+
+/* "Open in <space> ⌘O" button */
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #zen-little-window-space-picker {
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  max-width: 240px !important;
+  margin-inline-start: 8px !important;
+  border-radius: var(--little-arc-radius) !important;
+  background: var(--little-arc-button) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07) !important;
+  color: var(--little-arc-text) !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) .zen-little-window-space-button {
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  opacity: 1 !important;
+  max-width: 200px !important;
+  padding-inline: 10px 6px !important;
+  border-start-start-radius: var(--little-arc-radius) !important;
+  border-end-start-radius: var(--little-arc-radius) !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #zen-little-window-space-picker-shortcut {
+  margin-inline-start: 8px !important;
+  padding: 1px 5px !important;
+  border-radius: 4px !important;
+  background: var(--little-arc-keycap) !important;
+  color: var(--little-arc-muted) !important;
+  font-size: 11px !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #zen-little-window-space-picker-arrow {
+  min-width: 28px !important;
+  max-width: 30px !important;
+  border-inline-start: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-start-end-radius: var(--little-arc-radius) !important;
+  border-end-end-radius: var(--little-arc-radius) !important;
+  color: var(--little-arc-muted) !important;
+  /* Replace the "▾" glyph with a chevron. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 6l4 4 4-4' fill='none' stroke='%23a8a8b4' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: 14px 14px !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #zen-little-window-space-picker-arrow-label {
+  visibility: hidden !important;
+}
+
+/* Page fills the window under the toolbar, with only the window's own corners. */
+:root[zen-little-window="true"]:not([zen-has-empty-tab="true"]):not([little-arc-look="off"]) #zen-appcontent-wrapper {
+  margin: 0 !important;
+  border-radius: 0 0 var(--little-arc-window-radius) var(--little-arc-window-radius) !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) :is(#tabbrowser-tabbox, #tabbrowser-tabpanels, #zen-tabbox-wrapper),
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #tabbrowser-tabpanels > .browserSidebarContainer:not(.zen-glance-overlay) {
+  border-radius: 0 0 var(--little-arc-window-radius) var(--little-arc-window-radius) !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #zen-tabbox-wrapper {
+  box-shadow: none !important;
+  clip-path: inset(0 round 0 0 var(--little-arc-window-radius) var(--little-arc-window-radius)) !important;
+}
+
+:root[zen-little-window="true"]:not([little-arc-look="off"]) #zen-tabbox-wrapper::after {
+  box-shadow: none !important;
+}

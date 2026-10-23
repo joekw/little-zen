@@ -6,6 +6,18 @@ This project is based on [12th-devs/little-zen](https://github.com/12th-devs/lit
 
 ![Little Zen showcase](assets/little-zen-showcase.gif)
 
+## Changes on this branch (`little-arc`)
+
+This fork's `little-arc` branch makes Little Zen behave and look more like Arc's Little Arc:
+
+- **Little Arc look** (`little-arc-look.css`, `littleArcLook.uc.js`): a dark toolbar with the macOS traffic lights at the left, a single back chevron, a rounded address pill, a dark **Open in Space ⌘O** button, and the page filling the window under the toolbar. Remove the `@import url("CSS/little-arc-look.css");` line from `userChrome.css` to go back to the original look.
+- **Main window's container:** pages open in the container of the space that's active in the most recently used main window, instead of always the default container. A link clicked while you're in a space tied to a Work container opens with your Work cookies and logins.
+- **Opens at the cursor (macOS):** the window is centred on the mouse pointer, on whichever display it's on.
+- **Not restored as regular windows:** the installer sets `zen.session-store.restore-unsynced-windows` to `false`, so Little Zen windows open at quit don't come back as regular windows. Other unsynced windows (for example ones from **Open Link in New Window**) aren't restored either.
+- **Private debug log:** `little-zen-debug.log` in the profile, which records visited URLs, is only written when `extensions.littleZen.debugRouting` is `true`.
+
+`install.sh` (macOS and Linux) installs these changes. `install.ps1` (Windows) hasn't been updated and still installs the upstream version.
+
 ## Features
 
 - Open a blank Little Zen window with `Ctrl+Alt+N`.
@@ -42,7 +54,7 @@ If Zen is installed in a protected directory, open PowerShell as Administrator a
 ### Linux
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/wahyuabrory/little-zen/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/joekw/little-zen/little-arc/install.sh | sh
 ```
 
 The installer supports the Zen tarball and normal system packages. A system installation can require `sudo`; the installer prints the exact rerun command if needed.
@@ -52,7 +64,7 @@ Zen Flatpak is not supported. Flatpak application files are immutable, but `fx-a
 ### macOS
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/wahyuabrory/little-zen/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/joekw/little-zen/little-arc/install.sh | sh
 ```
 
 Writing to `/Applications/Zen.app` can require `sudo`. If required, use the exact rerun command printed by the installer.
@@ -62,7 +74,7 @@ Writing to `/Applications/Zen.app` can require `sudo`. If required, use the exac
 Clone the repository when you need to select paths manually:
 
 ```sh
-git clone https://github.com/wahyuabrory/little-zen.git
+git clone -b little-arc https://github.com/joekw/little-zen.git
 cd little-zen
 ```
 

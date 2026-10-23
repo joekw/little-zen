@@ -24,7 +24,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-raw_base=https://raw.githubusercontent.com/wahyuabrory/little-zen/main
+raw_base=https://raw.githubusercontent.com/joekw/little-zen/little-arc
 temp_payload=
 
 if [ ! -f "$script_dir/littleZen.uc.js" ] || [ ! -f "$script_dir/vendor/fx-autoconfig/program/config.js" ]; then
@@ -34,6 +34,8 @@ if [ ! -f "$script_dir/littleZen.uc.js" ] || [ ! -f "$script_dir/vendor/fx-autoc
   for file in \
     littleZen.uc.js \
     little-zen.css \
+    littleArcLook.uc.js \
+    little-arc-look.css \
     vendor/fx-autoconfig/program/config.js \
     vendor/fx-autoconfig/program/defaults/pref/config-prefs.js \
     vendor/fx-autoconfig/profile/chrome/utils/boot.sys.mjs \
@@ -51,7 +53,7 @@ fi
 
 vendor=$script_dir/vendor/fx-autoconfig
 
-for file in littleZen.uc.js little-zen.css vendor/fx-autoconfig/program/config.js vendor/fx-autoconfig/program/defaults/pref/config-prefs.js; do
+for file in littleZen.uc.js little-zen.css littleArcLook.uc.js little-arc-look.css vendor/fx-autoconfig/program/config.js vendor/fx-autoconfig/program/defaults/pref/config-prefs.js; do
   [ -f "$script_dir/$file" ] || die "Installer payload is missing: $file"
 done
 
@@ -191,6 +193,8 @@ chrome=$profile/chrome
 mkdir -p "$chrome/JS" "$chrome/CSS" "$chrome/utils"
 cp "$script_dir/littleZen.uc.js" "$chrome/JS/littleZen.uc.js"
 cp "$script_dir/little-zen.css" "$chrome/CSS/little-zen.css"
+cp "$script_dir/littleArcLook.uc.js" "$chrome/JS/littleArcLook.uc.js"
+cp "$script_dir/little-arc-look.css" "$chrome/CSS/little-arc-look.css"
 cp "$vendor/profile/chrome/utils/"* "$chrome/utils/"
 
 user_chrome=$chrome/userChrome.css
@@ -199,12 +203,25 @@ if [ ! -f "$user_chrome" ] || ! grep -Fqx "$import" "$user_chrome"; then
   { printf '%s\n' "$import"; [ ! -f "$user_chrome" ] || cat "$user_chrome"; } | atomic_write "$user_chrome"
 fi
 
+# The Little Arc look overrides little-zen.css, so it must be imported right after it.
+arc_import='@import url("CSS/little-arc-look.css");'
+if ! grep -Fqx "$arc_import" "$user_chrome"; then
+  awk -v base="$import" -v extra="$arc_import" '
+    { print }
+    $0 == base { print extra }
+  ' "$user_chrome" | atomic_write "$user_chrome"
+fi
+
 user_js=$profile/user.js
-pref='user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);'
-if [ -f "$user_js" ]; then
-  awk -v pref="$pref" '
+[ -f "$user_js" ] || : | atomic_write "$user_js"
+
+# Sets a boolean pref in user.js, replacing an existing line for it.
+set_bool_pref() {
+  name=$1
+  value=$2
+  awk -v name="$name" -v pref="user_pref(\"$name\", $value);" '
     BEGIN { found=0 }
-    /^[[:space:]]*user_pref\("toolkit\.legacyUserProfileCustomizations\.stylesheets",[[:space:]]*(true|false)[[:space:]]*\);[[:space:]]*$/ {
+    index($0, "user_pref(\"" name "\",") {
       if (!found) print pref
       found=1
       next
@@ -212,9 +229,11 @@ if [ -f "$user_js" ]; then
     { print }
     END { if (!found) print pref }
   ' "$user_js" | atomic_write "$user_js"
-else
-  printf '%s\n' "$pref" | atomic_write "$user_js"
-fi
+}
+
+set_bool_pref toolkit.legacyUserProfileCustomizations.stylesheets true
+# Don't reopen Little Zen windows as regular windows after a restart.
+set_bool_pref zen.session-store.restore-unsynced-windows false
 
 printf 'Little Zen installed without Sine.\nProfile: %s\nZen:     %s\n' "$profile" "$zen_dir"
 printf 'Start Zen. If the mod does not load, open about:support, select Clear startup cache, and restart.\n'
