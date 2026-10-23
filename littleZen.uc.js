@@ -100,6 +100,10 @@
     try {
       Services.console.logStringMessage(message);
     } catch (error) {}
+    // Only persist logs (which include visited URLs) when debugging is enabled.
+    if (!isRoutingDebugEnabled()) {
+      return;
+    }
     try {
       const file = Services.dirsvc.get("ProfD", Ci.nsIFile);
       file.append("little-zen-debug.log");
@@ -222,7 +226,67 @@
     });
   }
 
+  // Asks macOS where the mouse is, in Gecko's top-left screen coordinates
+  // (Firefox has no API for the global cursor position). Resolves to null
+  // elsewhere or on failure.
+  async function queryCursorPoint() {
+    if (AppConstants.platform !== "macosx") {
+      return null;
+    }
+    try {
+      const { Subprocess } = ChromeUtils.importESModule(
+        "resource://gre/modules/Subprocess.sys.mjs"
+      );
+      const proc = await Subprocess.call({
+        command: "/usr/bin/osascript",
+        arguments: [
+          "-l",
+          "JavaScript",
+          "-e",
+          'ObjC.import("AppKit"); const p = $.NSEvent.mouseLocation; ' +
+            "const h = $.NSScreen.screens.objectAtIndex(0).frame.size.height; " +
+            'Math.round(p.x) + "," + Math.round(h - p.y)',
+        ],
+      });
+      const output = await proc.stdout.readString();
+      await proc.wait();
+      const [x, y] = output.trim().split(",").map(Number);
+      return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+    } catch (error) {
+      log("Could not read the cursor position", error);
+      return null;
+    }
+  }
+
+  // Centres the window on the point (normally where the link was clicked),
+  // kept inside the available area of the display containing that point.
+  function placeWindowAtPoint(win, point) {
+    if (!point || win.closed) {
+      return false;
+    }
+    try {
+      const screen = Cc["@mozilla.org/gfx/screenmanager;1"]
+        .getService(Ci.nsIScreenManager)
+        .screenForRect(point.x, point.y, 1, 1);
+      const left = {}, top = {}, width = {}, height = {};
+      screen.GetAvailRectDisplayPix(left, top, width, height);
+      const clamp = (value, min, size) =>
+        Math.round(Math.min(Math.max(value, min), min + Math.max(0, size)));
+      win.moveTo(
+        clamp(point.x - win.outerWidth / 2, left.value, width.value - win.outerWidth),
+        clamp(point.y - win.outerHeight / 2, top.value, height.value - win.outerHeight)
+      );
+      return true;
+    } catch (error) {
+      log("Could not place the Little Zen window at the cursor", error);
+      return false;
+    }
+  }
+
   function centerWindow(win) {
+    if (placeWindowAtPoint(win, win.__littleZenCursorPoint)) {
+      return;
+    }
     try {
       win.docShell?.treeOwner
         ?.QueryInterface(Ci.nsIInterfaceRequestor)
@@ -1370,21 +1434,23 @@
         Services.scriptSecurityManager.getSystemPrincipal();
       const selectedTab = win.gBrowser?.selectedTab;
       const currentContainerId = getTabContainerId(selectedTab);
+      const targetContainerId = getMainWindowContainerId(win);
 
-      routeLog("Little Zen navigation: enforcing the default container", {
+      routeLog("Little Zen navigation: using the main window's container", {
         url: pendingUrl,
         reason,
         currentContainerId,
+        targetContainerId,
       });
 
       let loadedByNewTab = false;
-      if (selectedTab && currentContainerId !== 0) {
+      if (selectedTab && currentContainerId !== targetContainerId) {
         const defaultTab = win.gBrowser.addTab(pendingUrl, {
           triggeringPrincipal: principal,
           skipAnimation: true,
           skipRoute: true,
           inBackground: false,
-          userContextId: 0,
+          userContextId: targetContainerId,
         });
 
         if (defaultTab?.linkedBrowser) {
@@ -1408,9 +1474,9 @@
               log("Could not remove old Little Zen container tab", error);
             }
           }, 1000);
-          routeLog("Little Zen navigation: opened URL in the default container");
+          routeLog("Little Zen navigation: opened URL in the main window's container");
         } else {
-          log("Little Zen default-container tab creation failed");
+          log("Little Zen container tab creation failed");
           win.__littleZenPendingURL = pendingUrl;
           win.__littleZenPendingURLMeta = pendingMeta;
           setLittleWindowLoading(win, true, `retry:${reason}`);
@@ -1514,6 +1580,24 @@
       }
     }
     return null;
+  }
+
+  // Container of the active space in the most recently used main window, so
+  // Little Zen pages share that space's cookies and logins.
+  function getMainWindowContainerId(win) {
+    try {
+      const { BrowserWindowTracker } = ChromeUtils.importESModule(
+        "resource:///modules/BrowserWindowTracker.sys.mjs"
+      );
+      const mainWin =
+        BrowserWindowTracker.orderedWindows.find(
+          bw => bw !== win && !bw.closed && !isLittleWindow(bw)
+        ) ?? getMainBrowserWindow(win);
+      const containerId = mainWin?.gZenWorkspaces?.getCurrentSpaceContainerId?.();
+      return Number.isInteger(containerId) ? containerId : 0;
+    } catch (e) {
+      return 0;
+    }
   }
 
   function getWorkspaces(mainWin) {
@@ -3529,6 +3613,9 @@
         return null;
       }
 
+      // Look up the cursor now, while it's still where the link was clicked.
+      const cursorPoint = queryCursorPoint();
+
       const littleWindow = opener.OpenBrowserWindow({
         zenLittleWindow: true,
         all: false,
@@ -3538,6 +3625,16 @@
       });
 
       if (littleWindow) {
+        cursorPoint.then(point => {
+          littleWindow.__littleZenCursorPoint = point;
+          const placed = placeWindowAtPoint(littleWindow, point);
+          log("Little Zen cursor placement", {
+            point,
+            placed,
+            screenX: littleWindow.screenX,
+            screenY: littleWindow.screenY,
+          });
+        });
         this.queueNavigation(littleWindow, url, { source, triggeringPrincipal });
         if (expanded) {
           whenStartupReady(littleWindow, () => {
